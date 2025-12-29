@@ -1602,6 +1602,13 @@
             sessionStorage.removeItem('lt_lock_session');
         }
 
+        resetMatchTracking() {
+            this.lastProcessedWinner = null;
+            this.lastProcessedTime = 0;
+            this.saveLockState();
+            devTool.log('net', "RESET", "New Bet detected. Match tracking cleared.");
+        }
+
         start() {
             if(document.body) {
                 this.hospitalObserver.observe(document.body, { childList: true, subtree: true, attributes: true });
@@ -1659,11 +1666,9 @@
                  if (this.lockResults) {
                      this.lockResults = false;
                      // V7.04 FIX: Clear session lock on lobby return
-                     this.clearLockState();
+                     // Do not clear lastProcessedWinner to prevent duplicate processing from Lobby polls
+                     this.saveLockState();
 
-                     // V7.01 FIX: Reset duplicate detection on lobby return
-                     this.lastProcessedWinner = null;
-                     this.lastProcessedTime = 0;
                      devTool.log('net', "RESET", "Lobby detected. Unlocked.");
                      if (this.ui) this.ui.updateStatus("READY", "#4ade80");
                  }
@@ -1818,7 +1823,10 @@
                     devTool.log('net', "POST", body.substring(0, 50));
 
                     const m = body.match(/amount=(\d+)/);
-                    if(m) engine.setPendingBet(parseInt(m[1]));
+                    if(m) {
+                        engine.setPendingBet(parseInt(m[1]));
+                        self.resetMatchTracking();
+                    }
                 }
                 this.addEventListener('load', function() {
                     if((this.responseType===''||this.responseType==='text') && this.responseText) {
@@ -1837,7 +1845,10 @@
                     devTool.log('net', "FETCH", bodyStr.substring(0, 50));
 
                     const m = bodyStr.match(/amount=(\d+)/);
-                    if(m) engine.setPendingBet(parseInt(m[1]));
+                    if(m) {
+                        engine.setPendingBet(parseInt(m[1]));
+                        self.resetMatchTracking();
+                    }
                 }
                 const res = await origFetch.apply(this, args);
                 const c = res.clone(); c.text().then(t => {
