@@ -1653,7 +1653,8 @@
                         // V6.32 FIX: If pendingBet is not set, use HALF of Pot.
                         if (engine.pendingBet === null) {
                              engine.setPendingBet(val / 2);
-                             // devTool.log('dom', 'POT', `Bet inferred from Pot: ${val/2}`);
+                             // V7.05: Also reset match tracking for inferred bets to be safe
+                             this.resetMatchTracking();
                         }
                     }
                 }
@@ -1840,13 +1841,28 @@
             win.fetch = async function(...args) {
                 const url = args[0]?args[0].toString():"";
                 if(self.isRR && url.includes('russianRouletteData') && args[1]?.body) {
-                    const bodyStr = args[1].body.toString();
-                    console.log("[LabTrack] Fetch POST:", bodyStr);
-                    devTool.log('net', "FETCH", bodyStr.substring(0, 50));
+                    let amount = null;
+                    const body = args[1].body;
 
-                    const m = bodyStr.match(/amount=(\d+)/);
-                    if(m) {
-                        engine.setPendingBet(parseInt(m[1]));
+                    // V7.05: Handle FormData
+                    if (body && typeof body.get === 'function') {
+                        // FormData or similar
+                        try {
+                            const val = body.get('amount');
+                            if(val) amount = parseInt(val);
+                        } catch(e){}
+                        devTool.log('net', "FETCH", "[object FormData]");
+                    } else {
+                        // String body
+                        const bodyStr = body.toString();
+                        console.log("[LabTrack] Fetch POST:", bodyStr);
+                        devTool.log('net', "FETCH", bodyStr.substring(0, 50));
+                        const m = bodyStr.match(/amount=(\d+)/);
+                        if(m) amount = parseInt(m[1]);
+                    }
+
+                    if(amount !== null && amount > 0) {
+                        engine.setPendingBet(amount);
                         self.resetMatchTracking();
                     }
                 }
