@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Torn RR Simulator - LabTrack Testing</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            font-family: Arial, sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            padding: 20px;
+            margin: 0;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        h1 { color: #4ade80; text-align: center; }
+        .panel {
+            background: #16213e;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0;
+        }
+        .panel h2 { margin-top: 0; color: #fbbf24; }
+        input, button, select {
+            padding: 10px 15px;
+            margin: 5px;
+            border: none;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+        input {
+            background: #0f3460;
+            color: #fff;
+            width: 150px;
+        }
+        button {
+            background: #4ade80;
+            color: #000;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        button:hover { background: #22c55e; }
+        button.loss { background: #f87171; }
+        button.loss:hover { background: #ef4444; }
+        .log {
+            background: #0a0a15;
+            padding: 15px;
+            border-radius: 4px;
+            max-height: 300px;
+            overflow-y: auto;
+            font-family: monospace;
+            font-size: 12px;
+        }
+        .log-entry { padding: 3px 0; border-bottom: 1px solid #333; }
+        .log-entry.win { color: #4ade80; }
+        .log-entry.loss { color: #f87171; }
+        .log-entry.info { color: #60a5fa; }
+        .message-box {
+            background: #1e3a5f;
+            padding: 20px;
+            border-radius: 8px;
+            text-align: center;
+            font-size: 18px;
+            margin: 20px 0;
+            min-height: 60px;
+        }
+        .settings { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+        .settings label { margin-right: 10px; }
+        #mainContainer { /* For LabTrack DOM spy */ }
+        .status {
+            display: inline-block;
+            padding: 5px 10px;
+            border-radius: 4px;
+            margin: 10px 0;
+        }
+        .status.ready { background: #166534; }
+        .status.ingame { background: #854d0e; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎰 Torn RR Simulator</h1>
+        <p style="text-align:center;color:#888;">Test LabTrack without using real Torn med cooldown</p>
+
+        <div class="panel">
+            <h2>⚙️ Settings</h2>
+            <div class="settings">
+                <label>Your User ID:</label>
+                <input type="number" id="userId" value="3118323">
+
+                <label>Bet Amount:</label>
+                <input type="number" id="betAmount" value="5000000" step="1000000">
+
+                <label>Opponent ID:</label>
+                <input type="number" id="opponentId" value="1234567">
+            </div>
+        </div>
+
+        <div class="panel">
+            <h2>🎮 Game Simulation</h2>
+            <div>
+                <span class="status ready" id="gameStatus">LOBBY</span>
+            </div>
+            <div style="margin: 20px 0;">
+                <button onclick="startGame()">1. Start Game (Send Bet)</button>
+                <button onclick="simulateWin()">2a. Simulate WIN</button>
+                <button onclick="simulateLoss()" class="loss">2b. Simulate LOSS</button>
+                <button onclick="returnToLobby()">3. Return to Lobby</button>
+            </div>
+
+            <div id="mainContainer">
+                <div class="message-box" id="messageBox">
+                    Click "Start Game" to begin simulation
+                </div>
+            </div>
+        </div>
+
+        <div class="panel">
+            <h2>📋 Network Log</h2>
+            <p style="color:#888;font-size:12px;">Shows what LabTrack's network hooks should see</p>
+            <div class="log" id="networkLog"></div>
+        </div>
+
+        <div class="panel">
+            <h2>🔧 Advanced Testing</h2>
+            <button onclick="simulateDoubleFetch()">Test: Double Fetch (Race Condition)</button>
+            <button onclick="simulateWebSocketWin()">Test: WebSocket WIN</button>
+            <button onclick="clearLog()">Clear Log</button>
+        </div>
+    </div>
+
+    <script>
+        // Simulate Torn's cookie
+        document.cookie = `uid=${document.getElementById('userId').value}`;
+
+        const log = (msg, type = 'info') => {
+            const logEl = document.getElementById('networkLog');
+            const entry = document.createElement('div');
+            entry.className = `log-entry ${type}`;
+            entry.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+            logEl.insertBefore(entry, logEl.firstChild);
+        };
+
+        const updateStatus = (status, color) => {
+            const el = document.getElementById('gameStatus');
+            el.textContent = status;
+            el.className = `status ${color}`;
+        };
+
+        const showMessage = (msg) => {
+            document.getElementById('messageBox').innerHTML = msg;
+        };
+
+        // Store original fetch for simulation
+        const originalFetch = window.fetch;
+
+        // Override fetch to simulate Torn's API
+        window.fetch = async function(...args) {
+            const url = args[0]?.toString() || '';
+
+            // Log all fetches
+            if (url.includes('russianRoulette')) {
+                log(`FETCH: ${url.substring(0, 50)}...`, 'info');
+            }
+
+            // Return original fetch for non-simulated requests
+            return originalFetch.apply(this, args);
+        };
+
+        function startGame() {
+            const bet = document.getElementById('betAmount').value;
+            const userId = document.getElementById('userId').value;
+
+            // Update cookie
+            document.cookie = `uid=${userId}`;
+
+            // Simulate the bet fetch
+            log(`POST: sid=russianRouletteData&amount=${bet}`, 'info');
+
+            // Simulate Torn's response for starting a game
+            const response = {
+                success: true,
+                betAmount: parseInt(bet),
+                userID: userId
+            };
+
+            log(`Response: ${JSON.stringify(response)}`, 'info');
+
+            // Update URL hash like Torn does
+            window.location.hash = '#/game/123';
+            updateStatus('IN GAME', 'ingame');
+            showMessage('🎯 Game started! Waiting for result...<br><small>POT MONEY: $' + (parseInt(bet) * 2).toLocaleString() + '</small>');
+
+            // Dispatch a fake fetch response that LabTrack might intercept
+            simulateFetchResponse({ betAmount: bet, userID: userId });
+        }
+
+        function simulateWin() {
+            const userId = document.getElementById('userId').value;
+            const bet = document.getElementById('betAmount').value;
+            const potAmount = parseInt(bet) * 2;
+
+            // This is what Torn sends when you win
+            const winResponse = {
+                success: true,
+                winner: userId,
+                pot_amount: potAmount,
+                userID: userId
+            };
+
+            log(`WIN Response: ${JSON.stringify(winResponse)}`, 'win');
+
+            // Show win message (DOM spy should catch this)
+            showMessage(`<span style="color:#4ade80;font-size:24px;">🎉 You take your winnings!</span><br>+$${potAmount.toLocaleString()}`);
+
+            // Simulate the network response
+            simulateFetchResponse(winResponse);
+
+            updateStatus('WIN - LOCKED', 'ready');
+        }
+
+        function simulateLoss() {
+            const userId = document.getElementById('userId').value;
+            const opponentId = document.getElementById('opponentId').value;
+            const bet = document.getElementById('betAmount').value;
+
+            // This is what Torn sends when you lose
+            const lossResponse = {
+                success: true,
+                winner: opponentId,
+                pot_amount: parseInt(bet) * 2,
+                userID: userId
+            };
+
+            log(`LOSS Response: ${JSON.stringify(lossResponse)}`, 'loss');
+
+            // Show loss message (DOM spy should catch this)
+            showMessage(`<span style="color:#f87171;font-size:24px;">💀 You fall down...</span><br>-$${parseInt(bet).toLocaleString()}`);
+
+            // Simulate the network response
+            simulateFetchResponse(lossResponse);
+
+            updateStatus('LOSS - LOCKED', 'ready');
+        }
+
+        function returnToLobby() {
+            window.location.hash = '#/';
+            updateStatus('LOBBY', 'ready');
+            showMessage('Click "Start Game" to begin simulation');
+            log('Returned to lobby', 'info');
+        }
+
+        function simulateFetchResponse(data) {
+            // Create a fake Response object
+            const jsonStr = JSON.stringify(data);
+
+            // Trigger any XHR listeners
+            const fakeXHR = {
+                responseType: 'text',
+                responseText: jsonStr
+            };
+
+            // Dispatch custom event that LabTrack might be listening to
+            window.dispatchEvent(new CustomEvent('labtrack-test-response', {
+                detail: jsonStr
+            }));
+
+            // Also try to trigger through a real fetch that returns our data
+            const blob = new Blob([jsonStr], { type: 'application/json' });
+            const response = new Response(blob);
+
+            log(`Dispatched response with winner: ${data.winner || 'N/A'}`, 'info');
+        }
+
+        function simulateDoubleFetch() {
+            log('=== SIMULATING RACE CONDITION (Double Fetch) ===', 'info');
+
+            const userId = document.getElementById('userId').value;
+            const bet = document.getElementById('betAmount').value;
+
+            const winResponse = {
+                success: true,
+                winner: userId,
+                pot_amount: parseInt(bet) * 2
+            };
+
+            // Send two responses almost simultaneously
+            log(`Fetch 1: winner=${userId}`, 'win');
+            simulateFetchResponse(winResponse);
+
+            setTimeout(() => {
+                log(`Fetch 2: winner=${userId} (duplicate)`, 'win');
+                simulateFetchResponse(winResponse);
+            }, 10); // 10ms delay - simulates race condition
+
+            showMessage(`<span style="color:#fbbf24;">⚠️ RACE CONDITION TEST</span><br>Two fetch responses sent 10ms apart`);
+        }
+
+        function simulateWebSocketWin() {
+            const userId = document.getElementById('userId').value;
+            const bet = document.getElementById('betAmount').value;
+
+            log('=== SIMULATING WEBSOCKET WIN ===', 'info');
+
+            const wsData = JSON.stringify({
+                winner: userId,
+                pot_amount: parseInt(bet) * 2
+            });
+
+            // Create a fake WebSocket message event
+            const fakeEvent = new MessageEvent('message', { data: wsData });
+
+            log(`WebSocket message: ${wsData}`, 'win');
+
+            // If LabTrack has hooked WebSocket, it might catch this
+            window.dispatchEvent(new CustomEvent('labtrack-ws-test', { detail: wsData }));
+
+            showMessage(`<span style="color:#4ade80;">📡 WebSocket WIN sent</span>`);
+        }
+
+        function clearLog() {
+            document.getElementById('networkLog').innerHTML = '';
+        }
+
+        // Initialize
+        log('Simulator ready. LabTrack should detect this page.', 'info');
+        log('Note: For full testing, install LabTrack userscript and add this domain to @match', 'info');
+    </script>
+</body>
+</html>

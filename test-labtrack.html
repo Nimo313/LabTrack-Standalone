@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LabTrack Direct Test</title>
+    <style>
+        body {
+            font-family: monospace;
+            background: #111;
+            color: #0f0;
+            padding: 20px;
+        }
+        button {
+            background: #333;
+            color: #0f0;
+            border: 1px solid #0f0;
+            padding: 10px 20px;
+            margin: 5px;
+            cursor: pointer;
+        }
+        button:hover { background: #0f0; color: #000; }
+        .log { background: #000; padding: 10px; margin: 10px 0; max-height: 400px; overflow-y: auto; }
+        .win { color: #4f4; }
+        .loss { color: #f44; }
+        h2 { color: #ff0; }
+    </style>
+</head>
+<body>
+    <h1>LabTrack processWin/processLoss Direct Test</h1>
+    <p>This tests the deduplication logic directly without network simulation.</p>
+
+    <h2>Test Controls</h2>
+    <div>
+        <button onclick="testSingleWin()">Single Win</button>
+        <button onclick="testDoubleWin()">Double Win (Race Condition)</button>
+        <button onclick="testTripleWin()">Triple Win</button>
+        <button onclick="testSingleLoss()">Single Loss</button>
+        <button onclick="testWinThenLoss()">Win then Loss</button>
+        <button onclick="resetState()">Reset State</button>
+    </div>
+
+    <h2>Results</h2>
+    <div class="log" id="log"></div>
+
+    <h2>Current State</h2>
+    <pre id="state"></pre>
+
+    <script>
+        // Mini implementation of LabTrack's GameEngine for testing
+        const CONFIG = {
+            STORAGE_SAVE: 'lt_state_test',
+            RACE_LOCK_MS: 3000
+        };
+
+        const Logger = {
+            info: (ctx, msg) => log(`[INFO] ${ctx}: ${msg}`, 'win'),
+            warn: (ctx, msg) => log(`[WARN] ${ctx}: ${msg}`, 'loss'),
+            debug: (ctx, msg) => log(`[DEBUG] ${ctx}: ${msg}`)
+        };
+
+        function log(msg, type = '') {
+            const el = document.getElementById('log');
+            const div = document.createElement('div');
+            div.className = type;
+            div.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+            el.insertBefore(div, el.firstChild);
+        }
+
+        class GameEngine {
+            constructor() {
+                this.state = {
+                    sequence: [
+                        {id: '1', value: 1},
+                        {id: '2', value: 2},
+                        {id: '3', value: 3},
+                        {id: '4', value: 4},
+                        {id: '5', value: 5}
+                    ],
+                    roundHistory: [],
+                    totalProfit: 0,
+                    roundCount: 0
+                };
+                this.history = [];
+                this.pendingBet = 5000000;
+            }
+
+            getEffectiveBet() {
+                return this.pendingBet || 5000000;
+            }
+
+            pushHistory() {
+                this.history.push(JSON.stringify(this.state));
+            }
+
+            saveState() {
+                // Just for testing
+            }
+
+            // V7.09 Implementation
+            processWin() {
+                const now = Date.now();
+
+                // V7.09 FIX: SET marker FIRST, then check previous value
+                const prevMarker = this._winProcessingTime;
+                this._winProcessingTime = now;
+
+                if (prevMarker && (now - prevMarker) < 3000) {
+                    Logger.warn('GameEngine', 'Win SKIPPED - duplicate call within 3s');
+                    return false;
+                }
+
+                const bet = this.pendingBet || this.getEffectiveBet();
+
+                // Also check history as backup
+                if (this.state.roundHistory.length > 0) {
+                    const last = this.state.roundHistory[0];
+                    if (last.result === 'WIN' && (now - last.time) < 3000) {
+                        Logger.warn('GameEngine', 'Win SKIPPED - already in history within 3s');
+                        return false;
+                    }
+                }
+
+                this.pushHistory();
+
+                if (this.state.sequence.length === 0) {
+                    Logger.warn('GameEngine', 'Win processed with empty sequence');
+                    return false;
+                }
+
+                this.state.roundHistory.unshift({
+                    result: 'WIN',
+                    bet,
+                    profit: bet,
+                    time: now
+                });
+
+                if (this.state.sequence.length > 1) {
+                    this.state.sequence.shift();
+                    this.state.sequence.pop();
+                } else {
+                    this.state.sequence = [];
+                }
+
+                this.state.totalProfit += bet;
+                this.state.roundCount++;
+
+                this.saveState();
+                Logger.info('GameEngine', `Win processed: ${bet}`);
+                return true;
+            }
+
+            processLoss(amount) {
+                const now = Date.now();
+
+                const prevMarker = this._lossProcessingTime;
+                this._lossProcessingTime = now;
+
+                if (prevMarker && (now - prevMarker) < 3000) {
+                    Logger.warn('GameEngine', 'Loss SKIPPED - duplicate call within 3s');
+                    return false;
+                }
+
+                const bet = amount || this.pendingBet || this.getEffectiveBet();
+
+                if (this.state.roundHistory.length > 0) {
+                    const last = this.state.roundHistory[0];
+                    if (last.result === 'LOSS' && (now - last.time) < 3000) {
+                        Logger.warn('GameEngine', 'Loss SKIPPED - already in history within 3s');
+                        return false;
+                    }
+                }
+
+                this.pushHistory();
+
+                this.state.roundHistory.unshift({
+                    result: 'LOSS',
+                    bet,
+                    profit: -bet,
+                    time: now
+                });
+
+                this.state.sequence.push({
+                    id: Math.random().toString(36).substr(2, 9),
+                    value: bet
+                });
+
+                this.state.totalProfit -= bet;
+                this.state.roundCount++;
+
+                this.saveState();
+                Logger.info('GameEngine', `Loss processed: ${bet}`);
+                return true;
+            }
+        }
+
+        let engine = new GameEngine();
+
+        function updateState() {
+            document.getElementById('state').textContent = JSON.stringify({
+                sequence: engine.state.sequence.map(s => s.value),
+                roundHistory: engine.state.roundHistory.map(r => ({
+                    result: r.result,
+                    bet: r.bet,
+                    time: new Date(r.time).toLocaleTimeString()
+                })),
+                historyStackSize: engine.history.length
+            }, null, 2);
+        }
+
+        function testSingleWin() {
+            log('=== TEST: Single Win ===');
+            engine.processWin();
+            updateState();
+        }
+
+        function testDoubleWin() {
+            log('=== TEST: Double Win (Race Condition Simulation) ===');
+            log('Calling processWin() twice in same tick...');
+
+            // Simulate two calls in the same event loop tick
+            const result1 = engine.processWin();
+            const result2 = engine.processWin();
+
+            log(`Call 1 result: ${result1 ? 'PROCESSED' : 'SKIPPED'}`);
+            log(`Call 2 result: ${result2 ? 'PROCESSED' : 'SKIPPED'}`);
+
+            if (result1 && !result2) {
+                log('✅ SUCCESS: Only first call was processed!', 'win');
+            } else if (result1 && result2) {
+                log('❌ FAIL: Both calls were processed (DUPLICATE BUG)!', 'loss');
+            }
+
+            updateState();
+        }
+
+        function testTripleWin() {
+            log('=== TEST: Triple Win ===');
+
+            const results = [];
+            results.push(engine.processWin());
+            results.push(engine.processWin());
+            results.push(engine.processWin());
+
+            const processed = results.filter(r => r).length;
+            log(`Processed: ${processed}/3 calls`);
+
+            if (processed === 1) {
+                log('✅ SUCCESS: Only one call was processed!', 'win');
+            } else {
+                log(`❌ FAIL: ${processed} calls were processed!`, 'loss');
+            }
+
+            updateState();
+        }
+
+        function testSingleLoss() {
+            log('=== TEST: Single Loss ===');
+            engine.processLoss(5000000);
+            updateState();
+        }
+
+        function testWinThenLoss() {
+            log('=== TEST: Win then Loss ===');
+            engine.processWin();
+            engine.processLoss(5000000);
+            updateState();
+        }
+
+        function resetState() {
+            log('=== RESET ===');
+            engine = new GameEngine();
+            updateState();
+        }
+
+        // Initial state
+        updateState();
+        log('Test suite ready. Click buttons to test deduplication logic.');
+    </script>
+</body>
+</html>
