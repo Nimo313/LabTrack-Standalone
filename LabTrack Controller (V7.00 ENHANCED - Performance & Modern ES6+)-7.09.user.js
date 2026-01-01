@@ -2,8 +2,8 @@
 // ==UserScript==
 // @name         LabTrack Controller (V7.00 ENHANCED - Performance & Modern ES6+)
 // @namespace    http://tampermonkey.net/
-// @version      7.03
-// @description  Enhanced Labouchere - Auto-detect Custom Bets (One-time use), Fixed duplicate Win detection
+// @version      7.09
+// @description  Enhanced Labouchere - V7.09: Set-first-check-after in processWin/Loss + history check
 // @author       Nimo313 (Enhanced by Claude AI)
 // @match        https://www.torn.com/*
 // @run-at       document-start
@@ -20,7 +20,7 @@
     // CONFIGURATION CONSTANTS - V7.00 Enhancement
     // =============================================================================
     const CONFIG = Object.freeze({
-        VERSION: '7.03',
+        VERSION: '7.09',
         RACE_LOCK_MS: 3000,              // Race condition protection
         DOM_DELAY_MS: 50,                 // DOM spy delay
         POLL_MS: 500,                     // Polling interval
@@ -810,13 +810,31 @@
             return seq[0].value + seq[seq.length-1].value;
         }
 
-        // V7.00: Enhanced with CONFIG constants and better logging
+        // V7.09: Bulletproof deduplication using set-first-check-after
         processWin() {
-            if (Date.now() - this.lastActionTime < CONFIG.RACE_LOCK_MS) {
-                Logger.warn('GameEngine', 'Win ignored - race condition lock');
+            const now = Date.now();
+
+            // V7.09 FIX: SET marker FIRST, then check previous value
+            // This is the ONLY way to prevent TOCTOU
+            const prevMarker = this._winProcessingTime;
+            this._winProcessingTime = now;  // SET IMMEDIATELY
+
+            // Now check: was there already a recent call?
+            if (prevMarker && (now - prevMarker) < 3000) {
+                Logger.warn('GameEngine', 'Win SKIPPED - duplicate call within 3s');
                 return;
             }
-            this.lastActionTime = Date.now();
+
+            const bet = this.pendingBet || this.getEffectiveBet();
+
+            // Also check history as backup
+            if (this.state.roundHistory.length > 0) {
+                const last = this.state.roundHistory[0];
+                if (last.result === 'WIN' && (now - last.time) < 3000) {
+                    Logger.warn('GameEngine', 'Win SKIPPED - already in history within 3s');
+                    return;
+                }
+            }
 
             this.pushHistory();
             if (this.state.sequence.length === 0) {
@@ -824,7 +842,6 @@
                 return;
             }
 
-            const bet = this.pendingBet || this.getEffectiveBet();
             let mult = 1;
             try {
                 const settings = JSON.parse(localStorage.getItem(CONFIG.STORAGE_SETTINGS));
@@ -839,7 +856,7 @@
                 result: 'WIN',
                 bet,
                 profit: bet,
-                time: Date.now()
+                time: now  // Use the same 'now' timestamp
             });
 
             if (this.state.sequence.length > 1) {
@@ -864,14 +881,29 @@
         }
 
         processLoss(amount) {
-            if (Date.now() - this.lastActionTime < CONFIG.RACE_LOCK_MS) {
-                Logger.warn('GameEngine', 'Loss ignored - race condition lock');
+            const now = Date.now();
+
+            // V7.09 FIX: SET marker FIRST, then check previous value
+            const prevMarker = this._lossProcessingTime;
+            this._lossProcessingTime = now;  // SET IMMEDIATELY
+
+            if (prevMarker && (now - prevMarker) < 3000) {
+                Logger.warn('GameEngine', 'Loss SKIPPED - duplicate call within 3s');
                 return;
             }
-            this.lastActionTime = Date.now();
+
+            const bet = amount || this.pendingBet || this.getEffectiveBet();
+
+            // Also check history as backup
+            if (this.state.roundHistory.length > 0) {
+                const last = this.state.roundHistory[0];
+                if (last.result === 'LOSS' && (now - last.time) < 3000) {
+                    Logger.warn('GameEngine', 'Loss SKIPPED - already in history within 3s');
+                    return;
+                }
+            }
 
             this.pushHistory();
-            const bet = amount || this.pendingBet || this.getEffectiveBet();
 
             let mult = 1;
             try {
@@ -887,7 +919,7 @@
                 result: 'LOSS',
                 bet,
                 profit: -bet,
-                time: Date.now()
+                time: now
             });
 
             this.state.sequence.push({
@@ -1053,7 +1085,7 @@
         render(container) {
             const div = document.createElement('div'); div.id = 'lt-dashboard'; div.className = 'visible';
             div.innerHTML = `
-                <div id="lt-header"><span style="display:flex;align-items:center;gap:8px;"><span style="background:#7c3aed;width:8px;height:8px;border-radius:50%"></span>LabTrack V6.37</span>
+                <div id="lt-header"><span style="display:flex;align-items:center;gap:8px;"><span style="background:#7c3aed;width:8px;height:8px;border-radius:50%"></span>LabTrack V${CONFIG.VERSION}</span>
                 <div style="display:flex;gap:10px;">
                     <span id="lt-btn-debug" class="lt-btn lt-btn-debug">🐞</span>
                     <button id="lt-btn-info" class="lt-btn lt-btn-action" style="padding:4px 8px;width:auto;">ℹ️ Info</button>
@@ -1537,6 +1569,11 @@
             this.lastProcessedWinner = null;
             this.lastProcessedTime = 0;
 
+            // V7.04 FIX: Text deduplication for DOM messages
+            this.lastProcessedDomText = null;
+            this.lastProcessedDomTime = 0;
+            this.pendingDomProcess = false;
+
             // Make available globally so DevTool can trigger it
             window.LabTrackIntegration = this;
 
@@ -1560,7 +1597,8 @@
         start() {
             if(document.body) {
                 this.hospitalObserver.observe(document.body, { childList: true, subtree: true, attributes: true });
-                this.startDomSpy(); // Start Async Scanner
+                // V7.05: DOM Spy disabled - using Network-only detection to prevent duplicate processing
+                // this.startDomSpy();
             }
             setInterval(() => {
                 const href = window.location.href;
@@ -1613,9 +1651,15 @@
              if ((hash === '' || hash === '#/') && window.location.href.includes('sid=russianRoulette')) {
                  if (this.lockResults) {
                      this.lockResults = false;
-                     // V7.01 FIX: Reset duplicate detection on lobby return
+                     // V7.06 FIX: Reset all duplicate detection on lobby return
                      this.lastProcessedWinner = null;
                      this.lastProcessedTime = 0;
+                     this.lastSeenWinnerId = null;
+                     this.lastSeenWinnerTime = 0;
+                     this._winnerLock = null;
+                     this.lastProcessedDomText = null;
+                     this.lastProcessedDomTime = 0;
+                     this.pendingDomProcess = false;
                      devTool.log('net', "RESET", "Lobby detected. Unlocked.");
                      if (this.ui) this.ui.updateStatus("READY", "#4ade80");
                  }
@@ -1657,29 +1701,47 @@
             }
         }
 
-        // --- ASYNC DOM SPY (V6.24 Logic) ---
+        // --- ASYNC DOM SPY (V7.04 ENHANCED - Fixed duplicate processing) ---
         startDomSpy() {
             const observer = new MutationObserver((mutations) => {
+                // V7.04 FIX: Collect all texts from this batch FIRST, then dedupe
+                const textsToProcess = new Set();
+
                 mutations.forEach(m => {
                     m.addedNodes.forEach(node => {
                         if(node.nodeType === 1) { // Element
-                            // Async Check for React hydration
-                            setTimeout(() => {
-                                let match = false;
-                                try {
-                                    // Target specific message classes OR wrappers
-                                    if (node.matches("[class*='message']") || node.querySelector("[class*='message']")) match = true;
-                                } catch(e){}
-
-                                if(match) {
-                                    const text = (node.innerText || "").trim();
-                                    if(text.length < 5) return;
-                                    this.handleDomMessage(text);
+                            try {
+                                // V7.04 FIX: Only match the INNERMOST message element to avoid duplicates
+                                let messageEl = null;
+                                if (node.matches && node.matches("[class*='message']")) {
+                                    // Check if this node has a child message element (prefer the child)
+                                    const childMsg = node.querySelector("[class*='message']");
+                                    messageEl = childMsg || node;
+                                } else if (node.querySelector) {
+                                    messageEl = node.querySelector("[class*='message']");
                                 }
-                            }, 50); // 50ms delay
+
+                                if (messageEl) {
+                                    const text = (messageEl.innerText || "").trim();
+                                    if (text.length >= 5) {
+                                        textsToProcess.add(text);
+                                    }
+                                }
+                            } catch(e){}
                         }
                     });
                 });
+
+                // V7.04 FIX: Process each unique text only ONCE per mutation batch
+                if (textsToProcess.size > 0 && !this.pendingDomProcess) {
+                    this.pendingDomProcess = true;
+                    setTimeout(() => {
+                        textsToProcess.forEach(text => {
+                            this.handleDomMessage(text);
+                        });
+                        this.pendingDomProcess = false;
+                    }, 50);
+                }
             });
             const target = document.querySelector('#mainContainer') || document.body;
             if (target) {
@@ -1706,9 +1768,21 @@
             }
 
             if (outcome !== 'none') {
+                // V7.04 FIX: Text deduplication - prevent processing same message twice within 3 seconds
+                const now = Date.now();
+                const textKey = `${outcome}_${lower.substring(0, 30)}`;
+                if (this.lastProcessedDomText === textKey && (now - this.lastProcessedDomTime < 3000)) {
+                    devTool.log('dom', 'SKIP', `Duplicate DOM message: ${outcome}`);
+                    return;
+                }
+
                 // V7.01 FIX: Set locks IMMEDIATELY before triggerResult to prevent race conditions
                 this.isProcessing = true;
                 this.lockResults = true;
+
+                // V7.04 FIX: Mark this text as processed
+                this.lastProcessedDomText = textKey;
+                this.lastProcessedDomTime = now;
 
                 devTool.log('dom', 'TRIGGER', `Result detected: ${outcome}`);
                 this.triggerResult(outcome, 0);
@@ -1804,28 +1878,39 @@
         }
         scanTextForResults(text) {
             if (!engine.state.autoDetect) return;
-            if (this.lockResults) return;
+            if (this.lockResults || this.isProcessing) return;
 
-            if(!this.myId) this.myId = this.getMyId();
-            if(!this.myId || !text || text.length<10 || text.indexOf('winner')===-1) return;
+            // V7.05 FIX: Quick pre-check - does this text even contain a winner?
+            if(!text || text.length<10 || text.indexOf('winner')===-1) return;
 
-            if (this.isProcessing) {
-                devTool.log('net', "SKIP", "Processing Locked");
-                return;
+            // V7.05 FIX: Extract winnerId FIRST, then do atomic check
+            const winnerMatch = text.match(/"winner"\s*:\s*"?(\d+)"?/);
+            if(!winnerMatch) return;
+            const winnerId = parseInt(winnerMatch[1], 10);
+            if(winnerId===0) return;
+
+            // V7.06 FIX: TRUE ATOMIC CHECK - Set FIRST, then check previous value
+            // This prevents TOCTOU race condition where two calls both pass the check
+            // before either sets the lock
+            const prevLock = this._winnerLock;
+            this._winnerLock = winnerId;  // SET IMMEDIATELY before any check
+            if (prevLock === winnerId) {
+                return; // Another call is already processing this exact winner
             }
 
+            // Additional time-based check for safety (different game rounds with same winner)
+            const now = Date.now();
+            if (this.lastSeenWinnerId === winnerId && (now - this.lastSeenWinnerTime < 5000)) {
+                this._winnerLock = null; // Release lock
+                return;
+            }
+            this.lastSeenWinnerId = winnerId;
+            this.lastSeenWinnerTime = now;
+
+            if(!this.myId) this.myId = this.getMyId();
+            if(!this.myId) { this._winnerLock = null; return; }
+
             try {
-                const winnerMatch = text.match(/"winner"\s*:\s*"?(\d+)"?/);
-                if(!winnerMatch) return;
-                const winnerId = parseInt(winnerMatch[1], 10);
-                if(winnerId===0) return;
-
-                // V7.01 FIX: Check if we already processed this exact winnerId
-                if (this.lastProcessedWinner === winnerId && (Date.now() - this.lastProcessedTime < 5000)) {
-                    devTool.log('net', "SKIP", `Duplicate winner: ${winnerId}`);
-                    return;
-                }
-
                 devTool.log('net', "NET", `Winner found: ${winnerId}`);
 
                 let outcome = 'none';
@@ -1867,12 +1952,14 @@
                     this.triggerResult(outcome, netStake);
                 } else {
                      devTool.log('net', "IGNORE", "Spectator / Not Involved");
+                     this._winnerLock = null; // Release lock for spectator
                 }
 
             } catch(e) {
                 console.error("[LabTrack] Scan Err", e);
                 devTool.log('net', "ERR", e.message);
                 this.isProcessing = false;
+                this._winnerLock = null; // Release lock on error
             }
         }
         initDOMButtons() {
