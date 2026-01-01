@@ -2,8 +2,8 @@
 // ==UserScript==
 // @name         LabTrack Controller (V7.00 ENHANCED - Performance & Modern ES6+)
 // @namespace    http://tampermonkey.net/
-// @version      7.08
-// @description  Enhanced Labouchere - V7.08: Timestamp-based deduplication (check history, not locks)
+// @version      7.09
+// @description  Enhanced Labouchere - V7.09: Set-first-check-after in processWin/Loss + history check
 // @author       Nimo313 (Enhanced by Claude AI)
 // @match        https://www.torn.com/*
 // @run-at       document-start
@@ -20,7 +20,7 @@
     // CONFIGURATION CONSTANTS - V7.00 Enhancement
     // =============================================================================
     const CONFIG = Object.freeze({
-        VERSION: '7.08',
+        VERSION: '7.09',
         RACE_LOCK_MS: 3000,              // Race condition protection
         DOM_DELAY_MS: 50,                 // DOM spy delay
         POLL_MS: 500,                     // Polling interval
@@ -810,17 +810,28 @@
             return seq[0].value + seq[seq.length-1].value;
         }
 
-        // V7.08: Simple timestamp-based deduplication
+        // V7.09: Bulletproof deduplication using set-first-check-after
         processWin() {
             const now = Date.now();
+
+            // V7.09 FIX: SET marker FIRST, then check previous value
+            // This is the ONLY way to prevent TOCTOU
+            const prevMarker = this._winProcessingTime;
+            this._winProcessingTime = now;  // SET IMMEDIATELY
+
+            // Now check: was there already a recent call?
+            if (prevMarker && (now - prevMarker) < 3000) {
+                Logger.warn('GameEngine', 'Win SKIPPED - duplicate call within 3s');
+                return;
+            }
+
             const bet = this.pendingBet || this.getEffectiveBet();
 
-            // V7.08 FIX: Check if this Win already exists in history (same timestamp range)
-            // This is FOOLPROOF - we check the ACTUAL DATA, not locks
+            // Also check history as backup
             if (this.state.roundHistory.length > 0) {
                 const last = this.state.roundHistory[0];
                 if (last.result === 'WIN' && (now - last.time) < 3000) {
-                    Logger.warn('GameEngine', 'Win SKIPPED - already recorded within 3s');
+                    Logger.warn('GameEngine', 'Win SKIPPED - already in history within 3s');
                     return;
                 }
             }
@@ -871,13 +882,23 @@
 
         processLoss(amount) {
             const now = Date.now();
+
+            // V7.09 FIX: SET marker FIRST, then check previous value
+            const prevMarker = this._lossProcessingTime;
+            this._lossProcessingTime = now;  // SET IMMEDIATELY
+
+            if (prevMarker && (now - prevMarker) < 3000) {
+                Logger.warn('GameEngine', 'Loss SKIPPED - duplicate call within 3s');
+                return;
+            }
+
             const bet = amount || this.pendingBet || this.getEffectiveBet();
 
-            // V7.08 FIX: Check if this Loss already exists in history (same timestamp range)
+            // Also check history as backup
             if (this.state.roundHistory.length > 0) {
                 const last = this.state.roundHistory[0];
                 if (last.result === 'LOSS' && (now - last.time) < 3000) {
-                    Logger.warn('GameEngine', 'Loss SKIPPED - already recorded within 3s');
+                    Logger.warn('GameEngine', 'Loss SKIPPED - already in history within 3s');
                     return;
                 }
             }
