@@ -2,8 +2,8 @@
 // ==UserScript==
 // @name         LabTrack Controller (V7.00 ENHANCED - Performance & Modern ES6+)
 // @namespace    http://tampermonkey.net/
-// @version      7.07
-// @description  Enhanced Labouchere - V7.07: Atomic lock in processWin/Loss as last defense
+// @version      7.08
+// @description  Enhanced Labouchere - V7.08: Timestamp-based deduplication (check history, not locks)
 // @author       Nimo313 (Enhanced by Claude AI)
 // @match        https://www.torn.com/*
 // @run-at       document-start
@@ -20,7 +20,7 @@
     // CONFIGURATION CONSTANTS - V7.00 Enhancement
     // =============================================================================
     const CONFIG = Object.freeze({
-        VERSION: '7.07',
+        VERSION: '7.08',
         RACE_LOCK_MS: 3000,              // Race condition protection
         DOM_DELAY_MS: 50,                 // DOM spy delay
         POLL_MS: 500,                     // Polling interval
@@ -810,27 +810,20 @@
             return seq[0].value + seq[seq.length-1].value;
         }
 
-        // V7.07: Enhanced with atomic lock directly in processWin
+        // V7.08: Simple timestamp-based deduplication
         processWin() {
-            // V7.07 FIX: Atomic lock using unique call ID
-            // This is the LAST line of defense against duplicate processing
             const now = Date.now();
-            const prevLockTime = this._processWinLockTime;
-            this._processWinLockTime = now; // SET FIRST
+            const bet = this.pendingBet || this.getEffectiveBet();
 
-            // If another call happened within 3 seconds, block this one
-            if (prevLockTime && (now - prevLockTime < 3000)) {
-                Logger.warn('GameEngine', 'Win BLOCKED - atomic lock (another call within 3s)');
-                return;
+            // V7.08 FIX: Check if this Win already exists in history (same timestamp range)
+            // This is FOOLPROOF - we check the ACTUAL DATA, not locks
+            if (this.state.roundHistory.length > 0) {
+                const last = this.state.roundHistory[0];
+                if (last.result === 'WIN' && (now - last.time) < 3000) {
+                    Logger.warn('GameEngine', 'Win SKIPPED - already recorded within 3s');
+                    return;
+                }
             }
-
-            // Original TOCTOU lock (kept as secondary protection)
-            if (now - this.lastActionTime < CONFIG.RACE_LOCK_MS) {
-                Logger.warn('GameEngine', 'Win ignored - race condition lock');
-                this._processWinLockTime = prevLockTime; // Restore previous lock
-                return;
-            }
-            this.lastActionTime = now;
 
             this.pushHistory();
             if (this.state.sequence.length === 0) {
@@ -838,7 +831,6 @@
                 return;
             }
 
-            const bet = this.pendingBet || this.getEffectiveBet();
             let mult = 1;
             try {
                 const settings = JSON.parse(localStorage.getItem(CONFIG.STORAGE_SETTINGS));
@@ -853,7 +845,7 @@
                 result: 'WIN',
                 bet,
                 profit: bet,
-                time: Date.now()
+                time: now  // Use the same 'now' timestamp
             });
 
             if (this.state.sequence.length > 1) {
@@ -878,27 +870,19 @@
         }
 
         processLoss(amount) {
-            // V7.07 FIX: Atomic lock using unique call ID
             const now = Date.now();
-            const prevLockTime = this._processLossLockTime;
-            this._processLossLockTime = now; // SET FIRST
+            const bet = amount || this.pendingBet || this.getEffectiveBet();
 
-            // If another call happened within 3 seconds, block this one
-            if (prevLockTime && (now - prevLockTime < 3000)) {
-                Logger.warn('GameEngine', 'Loss BLOCKED - atomic lock (another call within 3s)');
-                return;
+            // V7.08 FIX: Check if this Loss already exists in history (same timestamp range)
+            if (this.state.roundHistory.length > 0) {
+                const last = this.state.roundHistory[0];
+                if (last.result === 'LOSS' && (now - last.time) < 3000) {
+                    Logger.warn('GameEngine', 'Loss SKIPPED - already recorded within 3s');
+                    return;
+                }
             }
-
-            // Original TOCTOU lock (kept as secondary protection)
-            if (now - this.lastActionTime < CONFIG.RACE_LOCK_MS) {
-                Logger.warn('GameEngine', 'Loss ignored - race condition lock');
-                this._processLossLockTime = prevLockTime; // Restore previous lock
-                return;
-            }
-            this.lastActionTime = now;
 
             this.pushHistory();
-            const bet = amount || this.pendingBet || this.getEffectiveBet();
 
             let mult = 1;
             try {
@@ -914,7 +898,7 @@
                 result: 'LOSS',
                 bet,
                 profit: -bet,
-                time: Date.now()
+                time: now
             });
 
             this.state.sequence.push({
