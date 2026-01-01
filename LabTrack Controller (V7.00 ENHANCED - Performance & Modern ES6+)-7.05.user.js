@@ -2,8 +2,8 @@
 // ==UserScript==
 // @name         LabTrack Controller (V7.00 ENHANCED - Performance & Modern ES6+)
 // @namespace    http://tampermonkey.net/
-// @version      7.04
-// @description  Enhanced Labouchere - V7.04: Fixed duplicate Win processing in Auto-Detect mode
+// @version      7.05
+// @description  Enhanced Labouchere - V7.05: Network-only detection (DOM Spy disabled)
 // @author       Nimo313 (Enhanced by Claude AI)
 // @match        https://www.torn.com/*
 // @run-at       document-start
@@ -20,7 +20,7 @@
     // CONFIGURATION CONSTANTS - V7.00 Enhancement
     // =============================================================================
     const CONFIG = Object.freeze({
-        VERSION: '7.04',
+        VERSION: '7.05',
         RACE_LOCK_MS: 3000,              // Race condition protection
         DOM_DELAY_MS: 50,                 // DOM spy delay
         POLL_MS: 500,                     // Polling interval
@@ -1565,7 +1565,8 @@
         start() {
             if(document.body) {
                 this.hospitalObserver.observe(document.body, { childList: true, subtree: true, attributes: true });
-                this.startDomSpy(); // Start Async Scanner
+                // V7.05: DOM Spy disabled - using Network-only detection to prevent duplicate processing
+                // this.startDomSpy();
             }
             setInterval(() => {
                 const href = window.location.href;
