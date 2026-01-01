@@ -2,7 +2,7 @@
 // ==UserScript==
 // @name         LabTrack Controller (V7.00 ENHANCED - Performance & Modern ES6+)
 // @namespace    http://tampermonkey.net/
-// @version      7.09
+// @version      7.10
 // @description  Enhanced Labouchere - V7.09: Set-first-check-after in processWin/Loss + history check
 // @author       Nimo313 (Enhanced by Claude AI)
 // @match        https://www.torn.com/*
@@ -20,7 +20,7 @@
     // CONFIGURATION CONSTANTS - V7.00 Enhancement
     // =============================================================================
     const CONFIG = Object.freeze({
-        VERSION: '7.09',
+        VERSION: '7.10',
         RACE_LOCK_MS: 3000,              // Race condition protection
         DOM_DELAY_MS: 50,                 // DOM spy delay
         POLL_MS: 500,                     // Polling interval
@@ -1097,6 +1097,7 @@
                     <div class="lt-stat-row">
                         <div class="lt-stat-item"><span>Streak:</span><span id="lt-streak-val" class="lt-stat-val">0</span></div>
                         <div class="lt-stat-item"><span>Winrate:</span><span id="lt-winrate-val" class="lt-stat-val">0%</span></div>
+                        <div class="lt-stat-item"><span>Rounds:</span><span id="lt-rounds-val" class="lt-stat-val">0</span></div>
                     </div>
                     <div class="lt-stat-row"><span>Remaining: <b id="lt-rem-val" style="color:#e2e8f0">0</b></span><span>Profit: <b id="lt-prof-val">0</b></span></div>
                     <div id="lt-bet-box" class="lt-bet-box"><div style="font-size:10px;color:#64748b;text-transform:uppercase;margin-bottom:5px;">Next Bet</div><div id="lt-bet-display" class="lt-big-val">0</div></div>
@@ -1469,6 +1470,10 @@
                 const wr = document.getElementById('lt-winrate-val');
                 wr.innerText = `${rate}%`;
                 wr.style.color = rate >= 50 ? '#4ade80' : '#e2e8f0';
+
+                // V7.10: Round counter
+                const rc = document.getElementById('lt-rounds-val');
+                if (rc) rc.innerText = s.roundCount || 0;
 
                 const mb = document.getElementById('lt-btn-confirm-merge');
                 const mt = document.getElementById('lt-btn-merge');
