@@ -1053,7 +1053,7 @@
         render(container) {
             const div = document.createElement('div'); div.id = 'lt-dashboard'; div.className = 'visible';
             div.innerHTML = `
-                <div id="lt-header"><span style="display:flex;align-items:center;gap:8px;"><span style="background:#7c3aed;width:8px;height:8px;border-radius:50%"></span>LabTrack V6.37</span>
+                <div id="lt-header"><span style="display:flex;align-items:center;gap:8px;"><span style="background:#7c3aed;width:8px;height:8px;border-radius:50%"></span>LabTrack V${CONFIG.VERSION}</span>
                 <div style="display:flex;gap:10px;">
                     <span id="lt-btn-debug" class="lt-btn lt-btn-debug">🐞</span>
                     <button id="lt-btn-info" class="lt-btn lt-btn-action" style="padding:4px 8px;width:auto;">ℹ️ Info</button>
