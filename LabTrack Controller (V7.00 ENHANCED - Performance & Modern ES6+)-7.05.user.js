@@ -3,7 +3,7 @@
 // @name         LabTrack Controller (V7.00 ENHANCED - Performance & Modern ES6+)
 // @namespace    http://tampermonkey.net/
 // @version      7.05
-// @description  Enhanced Labouchere - V7.05: Network-only detection (DOM Spy disabled)
+// @description  Enhanced Labouchere - V7.05: Atomic winnerId check prevents duplicate processing
 // @author       Nimo313 (Enhanced by Claude AI)
 // @match        https://www.torn.com/*
 // @run-at       document-start
@@ -1619,10 +1619,11 @@
              if ((hash === '' || hash === '#/') && window.location.href.includes('sid=russianRoulette')) {
                  if (this.lockResults) {
                      this.lockResults = false;
-                     // V7.01 FIX: Reset duplicate detection on lobby return
+                     // V7.05 FIX: Reset all duplicate detection on lobby return
                      this.lastProcessedWinner = null;
                      this.lastProcessedTime = 0;
-                     // V7.04 FIX: Reset DOM text deduplication on lobby return
+                     this.lastSeenWinnerId = null;
+                     this.lastSeenWinnerTime = 0;
                      this.lastProcessedDomText = null;
                      this.lastProcessedDomTime = 0;
                      this.pendingDomProcess = false;
@@ -1844,28 +1845,31 @@
         }
         scanTextForResults(text) {
             if (!engine.state.autoDetect) return;
-            if (this.lockResults) return;
+            if (this.lockResults || this.isProcessing) return;
+
+            // V7.05 FIX: Quick pre-check - does this text even contain a winner?
+            if(!text || text.length<10 || text.indexOf('winner')===-1) return;
+
+            // V7.05 FIX: Extract winnerId FIRST, then do atomic check
+            const winnerMatch = text.match(/"winner"\s*:\s*"?(\d+)"?/);
+            if(!winnerMatch) return;
+            const winnerId = parseInt(winnerMatch[1], 10);
+            if(winnerId===0) return;
+
+            // V7.05 FIX: ATOMIC DUPLICATE CHECK - using winnerId as the key
+            // If this exact winnerId was seen in the last 5 seconds, skip silently
+            const now = Date.now();
+            if (this.lastSeenWinnerId === winnerId && (now - this.lastSeenWinnerTime < 5000)) {
+                return; // Silent skip - duplicate from another network hook
+            }
+            // Set the seen marker IMMEDIATELY - this is the atomic part
+            this.lastSeenWinnerId = winnerId;
+            this.lastSeenWinnerTime = now;
 
             if(!this.myId) this.myId = this.getMyId();
-            if(!this.myId || !text || text.length<10 || text.indexOf('winner')===-1) return;
-
-            if (this.isProcessing) {
-                devTool.log('net', "SKIP", "Processing Locked");
-                return;
-            }
+            if(!this.myId) return;
 
             try {
-                const winnerMatch = text.match(/"winner"\s*:\s*"?(\d+)"?/);
-                if(!winnerMatch) return;
-                const winnerId = parseInt(winnerMatch[1], 10);
-                if(winnerId===0) return;
-
-                // V7.01 FIX: Check if we already processed this exact winnerId
-                if (this.lastProcessedWinner === winnerId && (Date.now() - this.lastProcessedTime < 5000)) {
-                    devTool.log('net', "SKIP", `Duplicate winner: ${winnerId}`);
-                    return;
-                }
-
                 devTool.log('net', "NET", `Winner found: ${winnerId}`);
 
                 let outcome = 'none';
