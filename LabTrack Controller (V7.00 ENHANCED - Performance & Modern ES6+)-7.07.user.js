@@ -2,8 +2,8 @@
 // ==UserScript==
 // @name         LabTrack Controller (V7.00 ENHANCED - Performance & Modern ES6+)
 // @namespace    http://tampermonkey.net/
-// @version      7.06
-// @description  Enhanced Labouchere - V7.06: True atomic lock (set-first-check-after) prevents TOCTOU race
+// @version      7.07
+// @description  Enhanced Labouchere - V7.07: Atomic lock in processWin/Loss as last defense
 // @author       Nimo313 (Enhanced by Claude AI)
 // @match        https://www.torn.com/*
 // @run-at       document-start
@@ -20,7 +20,7 @@
     // CONFIGURATION CONSTANTS - V7.00 Enhancement
     // =============================================================================
     const CONFIG = Object.freeze({
-        VERSION: '7.06',
+        VERSION: '7.07',
         RACE_LOCK_MS: 3000,              // Race condition protection
         DOM_DELAY_MS: 50,                 // DOM spy delay
         POLL_MS: 500,                     // Polling interval
@@ -810,13 +810,27 @@
             return seq[0].value + seq[seq.length-1].value;
         }
 
-        // V7.00: Enhanced with CONFIG constants and better logging
+        // V7.07: Enhanced with atomic lock directly in processWin
         processWin() {
-            if (Date.now() - this.lastActionTime < CONFIG.RACE_LOCK_MS) {
-                Logger.warn('GameEngine', 'Win ignored - race condition lock');
+            // V7.07 FIX: Atomic lock using unique call ID
+            // This is the LAST line of defense against duplicate processing
+            const now = Date.now();
+            const prevLockTime = this._processWinLockTime;
+            this._processWinLockTime = now; // SET FIRST
+
+            // If another call happened within 3 seconds, block this one
+            if (prevLockTime && (now - prevLockTime < 3000)) {
+                Logger.warn('GameEngine', 'Win BLOCKED - atomic lock (another call within 3s)');
                 return;
             }
-            this.lastActionTime = Date.now();
+
+            // Original TOCTOU lock (kept as secondary protection)
+            if (now - this.lastActionTime < CONFIG.RACE_LOCK_MS) {
+                Logger.warn('GameEngine', 'Win ignored - race condition lock');
+                this._processWinLockTime = prevLockTime; // Restore previous lock
+                return;
+            }
+            this.lastActionTime = now;
 
             this.pushHistory();
             if (this.state.sequence.length === 0) {
@@ -864,11 +878,24 @@
         }
 
         processLoss(amount) {
-            if (Date.now() - this.lastActionTime < CONFIG.RACE_LOCK_MS) {
-                Logger.warn('GameEngine', 'Loss ignored - race condition lock');
+            // V7.07 FIX: Atomic lock using unique call ID
+            const now = Date.now();
+            const prevLockTime = this._processLossLockTime;
+            this._processLossLockTime = now; // SET FIRST
+
+            // If another call happened within 3 seconds, block this one
+            if (prevLockTime && (now - prevLockTime < 3000)) {
+                Logger.warn('GameEngine', 'Loss BLOCKED - atomic lock (another call within 3s)');
                 return;
             }
-            this.lastActionTime = Date.now();
+
+            // Original TOCTOU lock (kept as secondary protection)
+            if (now - this.lastActionTime < CONFIG.RACE_LOCK_MS) {
+                Logger.warn('GameEngine', 'Loss ignored - race condition lock');
+                this._processLossLockTime = prevLockTime; // Restore previous lock
+                return;
+            }
+            this.lastActionTime = now;
 
             this.pushHistory();
             const bet = amount || this.pendingBet || this.getEffectiveBet();
