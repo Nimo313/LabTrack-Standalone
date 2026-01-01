@@ -1605,6 +1605,8 @@
         resetMatchTracking() {
             this.lastProcessedWinner = null;
             this.lastProcessedTime = 0;
+            // V7.05: Also unlock, assuming we are ready for a new result.
+            this.lockResults = false;
             this.saveLockState();
             devTool.log('net', "RESET", "New Bet detected. Match tracking cleared.");
         }
@@ -1664,21 +1666,23 @@
         checkRoute() {
              const hash = window.location.hash;
              if ((hash === '' || hash === '#/') && window.location.href.includes('sid=russianRoulette')) {
-                 if (this.lockResults) {
-                     this.lockResults = false;
-                     // V7.04 FIX: Clear session lock on lobby return
-                     // Do not clear lastProcessedWinner to prevent duplicate processing from Lobby polls
+                 // V7.05: Strict Lobby Lock. Do not process results in lobby.
+                 if (!this.lockResults) {
+                     this.lockResults = true;
                      this.saveLockState();
-
-                     devTool.log('net', "RESET", "Lobby detected. Unlocked.");
-                     if (this.ui) this.ui.updateStatus("READY", "#4ade80");
+                     devTool.log('net', "LOCK", "Lobby detected. Locked.");
                  }
+                 if (this.ui) this.ui.updateStatus("READY (LOBBY)", "#4ade80");
              } else if (hash.includes('/game')) {
-                 if (this.lockResults && this.ui) {
-                     this.ui.updateStatus("LOCKED (RETURN TO LOBBY)", "#f87171");
-                 } else if (this.ui) {
-                     this.ui.updateStatus("GAME IN PROGRESS", "#fbbf24");
+                 // V7.05: Auto-Unlock on Game Entry
+                 if (this.lockResults) {
+                     // We unlock here to allow pot scanning/result processing,
+                     // but we keep lastProcessedWinner to filter sticky polls until a new bet reset.
+                     this.lockResults = false;
+                     this.saveLockState();
+                     devTool.log('net', "UNLOCK", "Game detected. Unlocked.");
                  }
+                 if (this.ui) this.ui.updateStatus("GAME IN PROGRESS", "#fbbf24");
              }
         }
 
@@ -1818,6 +1822,7 @@
             const win = unsafeWindow || window; const self = this;
             const origSend = win.XMLHttpRequest.prototype.send;
             win.XMLHttpRequest.prototype.send = function(body) {
+                let isBet = false;
                 // V6.30: Enhanced hook for debugging custom bets
                 if(typeof body==='string' && (body.includes('sid=russianRouletteData')||window.location.href.includes('russianRoulette'))) {
                     console.log("[LabTrack] XHR POST:", body); // Debug log
@@ -1825,13 +1830,15 @@
 
                     const m = body.match(/amount=(\d+)/);
                     if(m) {
+                        isBet = true;
                         engine.setPendingBet(parseInt(m[1]));
                         self.resetMatchTracking();
                     }
                 }
                 this.addEventListener('load', function() {
                     if((this.responseType===''||this.responseType==='text') && this.responseText) {
-                        if(self.isRR) self.scanTextForResults(this.responseText);
+                        // V7.05: Ignore result scanning on the Bet response itself to prevent sticky duplicates
+                        if(self.isRR && !isBet) self.scanTextForResults(this.responseText);
                         self.checkHospitalNetwork(this.responseText);
                     }
                 });
