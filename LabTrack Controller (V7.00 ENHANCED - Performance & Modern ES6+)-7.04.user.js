@@ -2,8 +2,8 @@
 // ==UserScript==
 // @name         LabTrack Controller (V7.00 ENHANCED - Performance & Modern ES6+)
 // @namespace    http://tampermonkey.net/
-// @version      7.03
-// @description  Enhanced Labouchere - Auto-detect Custom Bets (One-time use), Fixed duplicate Win detection
+// @version      7.04
+// @description  Enhanced Labouchere - V7.04: Fixed duplicate Win processing in Auto-Detect mode
 // @author       Nimo313 (Enhanced by Claude AI)
 // @match        https://www.torn.com/*
 // @run-at       document-start
@@ -20,7 +20,7 @@
     // CONFIGURATION CONSTANTS - V7.00 Enhancement
     // =============================================================================
     const CONFIG = Object.freeze({
-        VERSION: '7.03',
+        VERSION: '7.04',
         RACE_LOCK_MS: 3000,              // Race condition protection
         DOM_DELAY_MS: 50,                 // DOM spy delay
         POLL_MS: 500,                     // Polling interval
@@ -1537,6 +1537,11 @@
             this.lastProcessedWinner = null;
             this.lastProcessedTime = 0;
 
+            // V7.04 FIX: Text deduplication for DOM messages
+            this.lastProcessedDomText = null;
+            this.lastProcessedDomTime = 0;
+            this.pendingDomProcess = false;
+
             // Make available globally so DevTool can trigger it
             window.LabTrackIntegration = this;
 
@@ -1616,6 +1621,10 @@
                      // V7.01 FIX: Reset duplicate detection on lobby return
                      this.lastProcessedWinner = null;
                      this.lastProcessedTime = 0;
+                     // V7.04 FIX: Reset DOM text deduplication on lobby return
+                     this.lastProcessedDomText = null;
+                     this.lastProcessedDomTime = 0;
+                     this.pendingDomProcess = false;
                      devTool.log('net', "RESET", "Lobby detected. Unlocked.");
                      if (this.ui) this.ui.updateStatus("READY", "#4ade80");
                  }
@@ -1657,29 +1666,47 @@
             }
         }
 
-        // --- ASYNC DOM SPY (V6.24 Logic) ---
+        // --- ASYNC DOM SPY (V7.04 ENHANCED - Fixed duplicate processing) ---
         startDomSpy() {
             const observer = new MutationObserver((mutations) => {
+                // V7.04 FIX: Collect all texts from this batch FIRST, then dedupe
+                const textsToProcess = new Set();
+
                 mutations.forEach(m => {
                     m.addedNodes.forEach(node => {
                         if(node.nodeType === 1) { // Element
-                            // Async Check for React hydration
-                            setTimeout(() => {
-                                let match = false;
-                                try {
-                                    // Target specific message classes OR wrappers
-                                    if (node.matches("[class*='message']") || node.querySelector("[class*='message']")) match = true;
-                                } catch(e){}
-
-                                if(match) {
-                                    const text = (node.innerText || "").trim();
-                                    if(text.length < 5) return;
-                                    this.handleDomMessage(text);
+                            try {
+                                // V7.04 FIX: Only match the INNERMOST message element to avoid duplicates
+                                let messageEl = null;
+                                if (node.matches && node.matches("[class*='message']")) {
+                                    // Check if this node has a child message element (prefer the child)
+                                    const childMsg = node.querySelector("[class*='message']");
+                                    messageEl = childMsg || node;
+                                } else if (node.querySelector) {
+                                    messageEl = node.querySelector("[class*='message']");
                                 }
-                            }, 50); // 50ms delay
+
+                                if (messageEl) {
+                                    const text = (messageEl.innerText || "").trim();
+                                    if (text.length >= 5) {
+                                        textsToProcess.add(text);
+                                    }
+                                }
+                            } catch(e){}
                         }
                     });
                 });
+
+                // V7.04 FIX: Process each unique text only ONCE per mutation batch
+                if (textsToProcess.size > 0 && !this.pendingDomProcess) {
+                    this.pendingDomProcess = true;
+                    setTimeout(() => {
+                        textsToProcess.forEach(text => {
+                            this.handleDomMessage(text);
+                        });
+                        this.pendingDomProcess = false;
+                    }, 50);
+                }
             });
             const target = document.querySelector('#mainContainer') || document.body;
             if (target) {
@@ -1706,9 +1733,21 @@
             }
 
             if (outcome !== 'none') {
+                // V7.04 FIX: Text deduplication - prevent processing same message twice within 3 seconds
+                const now = Date.now();
+                const textKey = `${outcome}_${lower.substring(0, 30)}`;
+                if (this.lastProcessedDomText === textKey && (now - this.lastProcessedDomTime < 3000)) {
+                    devTool.log('dom', 'SKIP', `Duplicate DOM message: ${outcome}`);
+                    return;
+                }
+
                 // V7.01 FIX: Set locks IMMEDIATELY before triggerResult to prevent race conditions
                 this.isProcessing = true;
                 this.lockResults = true;
+
+                // V7.04 FIX: Mark this text as processed
+                this.lastProcessedDomText = textKey;
+                this.lastProcessedDomTime = now;
 
                 devTool.log('dom', 'TRIGGER', `Result detected: ${outcome}`);
                 this.triggerResult(outcome, 0);
