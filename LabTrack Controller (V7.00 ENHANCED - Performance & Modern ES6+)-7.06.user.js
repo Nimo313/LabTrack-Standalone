@@ -2,8 +2,8 @@
 // ==UserScript==
 // @name         LabTrack Controller (V7.00 ENHANCED - Performance & Modern ES6+)
 // @namespace    http://tampermonkey.net/
-// @version      7.05
-// @description  Enhanced Labouchere - V7.05: Atomic winnerId check prevents duplicate processing
+// @version      7.06
+// @description  Enhanced Labouchere - V7.06: True atomic lock (set-first-check-after) prevents TOCTOU race
 // @author       Nimo313 (Enhanced by Claude AI)
 // @match        https://www.torn.com/*
 // @run-at       document-start
@@ -20,7 +20,7 @@
     // CONFIGURATION CONSTANTS - V7.00 Enhancement
     // =============================================================================
     const CONFIG = Object.freeze({
-        VERSION: '7.05',
+        VERSION: '7.06',
         RACE_LOCK_MS: 3000,              // Race condition protection
         DOM_DELAY_MS: 50,                 // DOM spy delay
         POLL_MS: 500,                     // Polling interval
@@ -1619,11 +1619,12 @@
              if ((hash === '' || hash === '#/') && window.location.href.includes('sid=russianRoulette')) {
                  if (this.lockResults) {
                      this.lockResults = false;
-                     // V7.05 FIX: Reset all duplicate detection on lobby return
+                     // V7.06 FIX: Reset all duplicate detection on lobby return
                      this.lastProcessedWinner = null;
                      this.lastProcessedTime = 0;
                      this.lastSeenWinnerId = null;
                      this.lastSeenWinnerTime = 0;
+                     this._winnerLock = null;
                      this.lastProcessedDomText = null;
                      this.lastProcessedDomTime = 0;
                      this.pendingDomProcess = false;
@@ -1856,18 +1857,26 @@
             const winnerId = parseInt(winnerMatch[1], 10);
             if(winnerId===0) return;
 
-            // V7.05 FIX: ATOMIC DUPLICATE CHECK - using winnerId as the key
-            // If this exact winnerId was seen in the last 5 seconds, skip silently
+            // V7.06 FIX: TRUE ATOMIC CHECK - Set FIRST, then check previous value
+            // This prevents TOCTOU race condition where two calls both pass the check
+            // before either sets the lock
+            const prevLock = this._winnerLock;
+            this._winnerLock = winnerId;  // SET IMMEDIATELY before any check
+            if (prevLock === winnerId) {
+                return; // Another call is already processing this exact winner
+            }
+
+            // Additional time-based check for safety (different game rounds with same winner)
             const now = Date.now();
             if (this.lastSeenWinnerId === winnerId && (now - this.lastSeenWinnerTime < 5000)) {
-                return; // Silent skip - duplicate from another network hook
+                this._winnerLock = null; // Release lock
+                return;
             }
-            // Set the seen marker IMMEDIATELY - this is the atomic part
             this.lastSeenWinnerId = winnerId;
             this.lastSeenWinnerTime = now;
 
             if(!this.myId) this.myId = this.getMyId();
-            if(!this.myId) return;
+            if(!this.myId) { this._winnerLock = null; return; }
 
             try {
                 devTool.log('net', "NET", `Winner found: ${winnerId}`);
@@ -1911,12 +1920,14 @@
                     this.triggerResult(outcome, netStake);
                 } else {
                      devTool.log('net', "IGNORE", "Spectator / Not Involved");
+                     this._winnerLock = null; // Release lock for spectator
                 }
 
             } catch(e) {
                 console.error("[LabTrack] Scan Err", e);
                 devTool.log('net', "ERR", e.message);
                 this.isProcessing = false;
+                this._winnerLock = null; // Release lock on error
             }
         }
         initDOMButtons() {
